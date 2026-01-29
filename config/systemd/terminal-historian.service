@@ -1,0 +1,26 @@
+[Unit]
+Description=Terminal Session Historian - Activity backup and summarization
+Documentation=https://github.com/yourusername/terminal-session-historian
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/terminal-historian-monitor
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+
+# Environment
+Environment=HISTORIAN_CONFIG=%h/.config/terminal-historian/config
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=terminal-historian
+
+[Install]
+WantedBy=default.target

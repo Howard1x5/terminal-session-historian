@@ -1,0 +1,19 @@
+# User data (never commit)
+data/
+*.log
+raw_history.txt
+context_summary.md
+
+# User config (never commit actual config)
+config/historian.conf
+
+# System files
+.DS_Store
+*~
+*.swp
+*.bak
+
+# Editor files
+.vscode/
+.idea/
+*.sublime-*

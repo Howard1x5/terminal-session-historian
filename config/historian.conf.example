@@ -1,0 +1,85 @@
+# Terminal Session Historian Configuration
+# Copy this to ~/.config/terminal-historian/config and customize
+
+# ============================================================================
+# STORAGE PATHS
+# ============================================================================
+
+# Where to store raw history (complete append-only log)
+RAW_HISTORY_PATH="$HOME/.local/share/terminal-historian/raw_history.txt"
+
+# Where to store summarized context
+SUMMARY_PATH="$HOME/.local/share/terminal-historian/context_summary.md"
+
+# Where to store session logs (optional, leave empty to disable)
+SESSION_LOG_DIR="$HOME/.local/share/terminal-historian/sessions"
+
+# ============================================================================
+# SOURCE SETTINGS
+# ============================================================================
+
+# Terminal/shell history source (auto-detected if empty)
+# Common locations:
+#   ~/.bash_history
+#   ~/.zsh_history
+#   ~/.local/share/fish/fish_history
+#   Custom application logs
+SHELL_ACTIVITY_SOURCE=""
+
+# Additional log directories to monitor (space-separated)
+# Example: "/var/log/myapp $HOME/.config/myapp/logs"
+ADDITIONAL_LOG_DIRS=""
+
+# ============================================================================
+# TIMING SETTINGS
+# ============================================================================
+
+# How often to check for new activity (seconds)
+CHECK_INTERVAL=60
+
+# How often to regenerate summary (days)
+SUMMARY_INTERVAL=7
+
+# Maximum age of sessions to include in summary (days)
+MAX_SESSION_AGE=30
+
+# ============================================================================
+# SUMMARY SETTINGS
+# ============================================================================
+
+# Maximum lines to include in context summary
+MAX_SUMMARY_LINES=500
+
+# Include working directories in summary (true/false)
+INCLUDE_DIRECTORIES=true
+
+# Include file paths in summary (true/false)
+INCLUDE_FILES=true
+
+# Include command history in summary (true/false)
+INCLUDE_COMMANDS=true
+
+# ============================================================================
+# LLM SUMMARIZATION (Optional)
+# ============================================================================
+
+# Enable LLM-powered summarization (true/false)
+# When disabled, uses basic text extraction
+LLM_SUMMARIZATION=false
+
+# Command to invoke LLM for summarization (if enabled)
+# Examples:
+#   "ollama run llama2"
+#   "cat | curl -X POST http://localhost:11434/api/generate -d @-"
+#   Leave empty to use built-in text summarization
+LLM_COMMAND=""
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+
+# Log level: DEBUG, INFO, WARN, ERROR
+LOG_LEVEL="INFO"
+
+# Log file location (leave empty to disable file logging)
+LOG_FILE="$HOME/.local/share/terminal-historian/historian.log"
