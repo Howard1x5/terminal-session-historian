@@ -16,8 +16,10 @@ Terminal Session Historian solves these problems by:
 ## Features
 
 - Monitors shell history and custom log sources
+- **Monitors AI coding agents** (Claude Code, Cursor, etc.) for session tracking
 - Append-only raw history (never loses data)
-- Configurable LLM-powered summarization
+- **Incremental LLM summarization** via Claude API (token-efficient pending buffer approach)
+- **Rolling summary file** that accumulates context over time
 - Daily session logs for granular access
 - Systemd integration for hands-off operation
 - Cross-platform (Linux, macOS)
@@ -104,21 +106,105 @@ Config file: `~/.config/terminal-historian/config`
 # Primary shell history source (auto-detected if empty)
 SHELL_ACTIVITY_SOURCE=""
 
-# Additional directories to monitor
-ADDITIONAL_LOG_DIRS="/path/to/app/logs"
+# Additional directories to monitor (include AI agent logs!)
+ADDITIONAL_LOG_DIRS="$HOME/.claude/projects"
 
 # Check for new activity every N seconds
 CHECK_INTERVAL=60
 
 # Regenerate summary every N days
-SUMMARY_INTERVAL=7
+SUMMARY_INTERVAL=1
 
-# Optional: LLM summarization
-LLM_SUMMARIZATION=false
-LLM_COMMAND="ollama run llama2"
+# LLM summarization via Claude API
+LLM_SUMMARIZATION=true
+CLAUDE_MODEL="claude-3-haiku-20240307"
 ```
 
 See `config/historian.conf.example` for all options.
+
+## Monitoring AI Coding Agents
+
+One powerful use case is tracking your sessions with AI coding assistants like Claude Code. These tools generate extensive transcripts that are valuable for:
+
+- **Context recovery** - Resume where you left off across sessions
+- **Learning documentation** - Review how you solved problems with AI assistance
+- **Project history** - Track architectural decisions and implementations
+
+### Setting Up Claude Code Monitoring
+
+Add Claude Code's project directory to your config:
+
+```bash
+ADDITIONAL_LOG_DIRS="$HOME/.claude/projects"
+```
+
+The monitor will automatically pick up `.jsonl` transcript files and include them in your history.
+
+## Claude API Summarization
+
+Instead of running a local LLM (which consumes significant RAM), you can use Claude's API for intelligent summarization.
+
+### Why Claude API?
+
+- **No local resources** - Doesn't compete with your other tools for RAM/CPU
+- **Higher quality** - Claude produces excellent summaries of technical content
+- **Token efficient** - The pending buffer approach only sends NEW content since last summary
+- **Cost effective** - Using claude-3-haiku keeps costs minimal (~$0.001 per summary)
+
+### Setup Steps
+
+1. **Create an Anthropic account** at [console.anthropic.com](https://console.anthropic.com)
+
+2. **Purchase API credits** - The API is separate from Claude Pro subscription
+   - Go to Settings → Billing → Add credits
+   - $5-10 is plenty for months of summarization
+
+3. **Generate an API key**
+   - Go to API Keys → Create Key
+   - Name it something like "terminal-historian"
+
+4. **Store your API key** (choose one method):
+   ```bash
+   # Option A: Config file (recommended)
+   echo "your-api-key-here" > ~/.config/terminal-historian/api_key
+   chmod 600 ~/.config/terminal-historian/api_key
+
+   # Option B: Environment variable
+   export ANTHROPIC_API_KEY="your-api-key-here"
+   ```
+
+5. **Enable in config**:
+   ```bash
+   LLM_SUMMARIZATION=true
+   CLAUDE_MODEL="claude-3-haiku-20240307"
+   ```
+
+### How It Works: Pending Buffer Approach
+
+The summarizer uses an incremental approach to save tokens:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    Raw History File                            │
+│  [===================|========================]                │
+│   Already summarized   New content (pending)                   │
+│         ↑                      ↓                               │
+│   Position marker        Sent to LLM                           │
+└────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────┐
+                    │  Rolling Summary    │
+                    │  (appends over time)│
+                    └─────────────────────┘
+```
+
+1. Tracks last summarized position (byte offset)
+2. Only sends NEW content since last run to Claude API
+3. Appends summary to rolling summary file
+4. Updates position marker
+
+This means even with hundreds of MB of history, each summarization call only processes recent activity.
 
 ## Usage
 
@@ -159,8 +245,10 @@ journalctl --user -u terminal-historian -f
 | File | Location | Purpose |
 |------|----------|---------|
 | Raw history | `~/.local/share/terminal-historian/raw_history.txt` | Complete append-only log |
-| Summary | `~/.local/share/terminal-historian/context_summary.md` | LLM-optimized summary |
+| Summary | `~/.local/share/terminal-historian/context_summary.md` | Static overview with stats |
+| Rolling summary | `~/.local/share/terminal-historian/context_summary_rolling.md` | Incremental LLM summaries |
 | Session logs | `~/.local/share/terminal-historian/sessions/` | Daily session files |
+| Position state | `~/.local/state/terminal-historian/last_summarized_position` | Tracks summarization progress |
 | Service log | `~/.local/share/terminal-historian/historian.log` | Daemon activity log |
 
 ## Use Cases
@@ -192,11 +280,14 @@ Share relevant session logs as real-world examples.
 
 ## Privacy
 
-**All data stays local.** Nothing is ever transmitted anywhere.
+**Your raw data stays local.** History files never leave your machine.
 
 - History stored in `~/.local/share/terminal-historian/`
 - Config stored in `~/.config/terminal-historian/`
-- No telemetry, no cloud sync, no external dependencies
+- API keys stored securely with restricted permissions
+- No telemetry, no cloud sync
+
+**If using Claude API summarization:** Recent activity content is sent to Anthropic's API for summarization. The API does not train on your data. If this is a concern, use local LLM summarization instead (e.g., Ollama).
 
 The `.gitignore` ensures you never accidentally commit your personal data if you fork this repo.
 

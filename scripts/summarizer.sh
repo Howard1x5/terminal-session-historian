@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Terminal Session Historian - Context Summarizer
-# Generates condensed context from raw history
+# Generates condensed context from raw history using incremental pending buffer approach
 
 set -euo pipefail
 
@@ -8,6 +8,68 @@ set -euo pipefail
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 source "$SCRIPT_DIR/utils.sh"
+
+# ============================================================================
+# PENDING BUFFER STATE MANAGEMENT
+# ============================================================================
+
+# These variables are set dynamically after config loads in init_state_tracking()
+STATE_DIR=""
+LAST_POSITION_FILE=""
+ROLLING_SUMMARY_FILE=""
+
+init_state_tracking() {
+    # Called after init_historian loads config
+    STATE_DIR="${STATE_DIR:-$HOME/.local/state/terminal-historian}"
+    LAST_POSITION_FILE="$STATE_DIR/last_summarized_position"
+    # Use config path if set, otherwise derive from SUMMARY_PATH
+    ROLLING_SUMMARY_FILE="${ROLLING_SUMMARY_PATH:-${SUMMARY_PATH%.md}_rolling.md}"
+}
+
+ensure_state_dir() {
+    mkdir -p "$STATE_DIR"
+}
+
+get_last_position() {
+    if [[ -f "$LAST_POSITION_FILE" ]]; then
+        cat "$LAST_POSITION_FILE"
+    else
+        echo "0"
+    fi
+}
+
+save_last_position() {
+    local position="$1"
+    echo "$position" > "$LAST_POSITION_FILE"
+}
+
+get_file_size() {
+    local file="$1"
+    if [[ -f "$file" ]]; then
+        if stat --version &>/dev/null; then
+            stat -c %s "$file" 2>/dev/null || echo "0"
+        else
+            stat -f %z "$file" 2>/dev/null || echo "0"
+        fi
+    else
+        echo "0"
+    fi
+}
+
+get_pending_content() {
+    local history_file="$1"
+    local last_pos
+    last_pos=$(get_last_position)
+    local current_size
+    current_size=$(get_file_size "$history_file")
+
+    if [[ $current_size -gt $last_pos ]]; then
+        # Extract only new content since last summary
+        tail -c +$((last_pos + 1)) "$history_file" 2>/dev/null
+    else
+        echo ""
+    fi
+}
 
 # ============================================================================
 # SUMMARIZATION FUNCTIONS
@@ -157,24 +219,108 @@ generate_llm_summary() {
 
     echo "## LLM-Generated Summary"
     echo ""
+    echo "_See rolling summary file for incremental summaries_"
+    echo ""
+}
 
-    local recent_content
-    recent_content=$(tail -n 500 "$history_file" 2>/dev/null)
+# Incremental LLM summarization - only processes new content since last run
+generate_incremental_llm_summary() {
+    local history_file="$1"
 
-    if [[ -n "$recent_content" ]]; then
-        local prompt="Summarize the following terminal session history in 5-10 bullet points. Focus on: main tasks accomplished, tools used, and key decisions made.\n\n$recent_content"
-
-        local summary
-        if summary=$(echo "$prompt" | eval "$LLM_COMMAND" 2>/dev/null); then
-            echo "$summary"
-        else
-            echo "_LLM summarization failed_"
-        fi
-    else
-        echo "_Not enough content for LLM summary_"
+    if [[ "$LLM_SUMMARIZATION" != "true" || -z "${LLM_COMMAND:-}" ]]; then
+        log_info "LLM summarization disabled or not configured"
+        return 0
     fi
 
-    echo ""
+    ensure_state_dir
+
+    local pending_content
+    pending_content=$(get_pending_content "$history_file")
+    local pending_lines
+    pending_lines=$(echo "$pending_content" | wc -l)
+
+    if [[ -z "$pending_content" || "$pending_lines" -lt 10 ]]; then
+        log_info "No significant new content to summarize (${pending_lines} lines)"
+        return 0
+    fi
+
+    log_info "Found $pending_lines new lines to summarize"
+
+    # Escape the content for JSON - handle newlines, quotes, backslashes
+    local escaped_content
+    escaped_content=$(echo "$pending_content" | \
+        sed 's/\\/\\\\/g' | \
+        sed 's/"/\\"/g' | \
+        sed ':a;N;$!ba;s/\n/\\n/g' | \
+        head -c 50000)  # Limit to ~50KB to stay within token limits
+
+    local prompt="Summarize the following terminal/Claude session activity in 3-7 concise bullet points. Focus on: main tasks worked on, key decisions made, problems solved, and current project state. Be specific about file paths, commands, and outcomes.
+
+Activity since last summary:
+$escaped_content"
+
+    log_info "Sending to Claude API for summarization..."
+
+    # Get API key
+    local api_key
+    api_key=$(cat ~/.config/terminal-historian/api_key 2>/dev/null || echo "${ANTHROPIC_API_KEY:-}")
+
+    if [[ -z "$api_key" ]]; then
+        log_error "No API key found. Set ANTHROPIC_API_KEY or create ~/.config/terminal-historian/api_key"
+        return 1
+    fi
+
+    # Make API call
+    local response
+    response=$(curl -s https://api.anthropic.com/v1/messages \
+        -H "Content-Type: application/json" \
+        -H "x-api-key: $api_key" \
+        -H "anthropic-version: 2023-06-01" \
+        -d "{
+            \"model\": \"${CLAUDE_MODEL:-claude-3-haiku-20240307}\",
+            \"max_tokens\": 1024,
+            \"messages\": [{
+                \"role\": \"user\",
+                \"content\": $(echo "$prompt" | jq -Rs .)
+            }]
+        }" 2>/dev/null)
+
+    # Check for errors
+    if echo "$response" | jq -e '.error' &>/dev/null; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error.message // .error.type // "Unknown error"')
+        log_error "Claude API error: $error_msg"
+        return 1
+    fi
+
+    local summary
+    summary=$(echo "$response" | jq -r '.content[0].text // empty')
+
+    if [[ -z "$summary" ]]; then
+        log_error "No summary returned from API"
+        log_debug "Response: $response"
+        return 1
+    fi
+
+    # Append to rolling summary file
+    {
+        echo ""
+        echo "---"
+        echo "### $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "_Summarized $pending_lines lines of new activity_"
+        echo ""
+        echo "$summary"
+    } >> "$ROLLING_SUMMARY_FILE"
+
+    # Update position marker
+    local current_size
+    current_size=$(get_file_size "$history_file")
+    save_last_position "$current_size"
+
+    log_info "Summary appended to: $ROLLING_SUMMARY_FILE"
+    log_info "Position updated to: $current_size bytes"
+
+    return 0
 }
 
 generate_footer() {
@@ -198,13 +344,41 @@ generate_footer() {
 # MAIN SUMMARIZATION
 # ============================================================================
 
+ensure_rolling_summary_header() {
+    if [[ ! -f "$ROLLING_SUMMARY_FILE" ]]; then
+        cat > "$ROLLING_SUMMARY_FILE" << 'EOF'
+# Terminal Session History - Rolling Summary
+
+This file contains incremental AI-generated summaries of your terminal and Claude Code sessions.
+Each section represents a summary of activity since the previous summary.
+
+Use this for: context recovery, documentation, feeding to LLMs, interview prep notes.
+
+EOF
+        log_info "Created rolling summary file: $ROLLING_SUMMARY_FILE"
+    fi
+}
+
 generate_summary() {
+    # Initialize state tracking paths now that config is loaded
+    init_state_tracking
+
     local output_file="$SUMMARY_PATH"
     local temp_file
     temp_file=$(mktemp)
 
     log_info "Generating context summary..."
+    log_debug "Rolling summary file: $ROLLING_SUMMARY_FILE"
 
+    ensure_state_dir
+    ensure_rolling_summary_header
+
+    # First, run incremental LLM summarization (appends to rolling file)
+    if [[ -f "$RAW_HISTORY_PATH" ]]; then
+        generate_incremental_llm_summary "$RAW_HISTORY_PATH" || true
+    fi
+
+    # Then generate the static summary file (for quick reference)
     {
         generate_header
 
