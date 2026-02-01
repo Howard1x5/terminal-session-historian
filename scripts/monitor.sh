@@ -138,6 +138,7 @@ main() {
 
     local check_count=0
     local summary_check_interval=100  # Check summary every N iterations
+    local rotation_check_interval=10  # Check rotation every N iterations
 
     while $RUNNING; do
         # Process all configured sources
@@ -145,8 +146,14 @@ main() {
             process_source "$source"
         done
 
-        # Periodically check if summary needs regeneration
         ((check_count++)) || true
+
+        # Check if raw history needs rotation (every ~10 minutes at default interval)
+        if [[ $((check_count % rotation_check_interval)) -eq 0 ]]; then
+            rotate_raw_history_if_needed
+        fi
+
+        # Periodically check if summary needs regeneration
         if [[ $((check_count % summary_check_interval)) -eq 0 ]]; then
             check_summary_needed
         fi

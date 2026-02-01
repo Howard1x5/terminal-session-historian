@@ -22,6 +22,7 @@ CHECK_INTERVAL=60
 SUMMARY_INTERVAL=7
 MAX_SESSION_AGE=30
 MAX_SUMMARY_LINES=500
+MAX_RAW_HISTORY_BYTES=104857600  # 100MB default (set to 0 to disable)
 INCLUDE_DIRECTORIES=true
 INCLUDE_FILES=true
 INCLUDE_COMMANDS=true
@@ -168,6 +169,57 @@ ensure_directories() {
 # ============================================================================
 # FILE OPERATIONS
 # ============================================================================
+
+get_file_size_bytes() {
+    local file="$1"
+    if [[ ! -f "$file" ]]; then
+        echo "0"
+        return
+    fi
+    if stat --version &>/dev/null; then
+        stat -c %s "$file" 2>/dev/null || echo "0"
+    else
+        stat -f %z "$file" 2>/dev/null || echo "0"
+    fi
+}
+
+rotate_raw_history_if_needed() {
+    # Skip if max size is 0 (disabled)
+    if [[ "${MAX_RAW_HISTORY_BYTES:-0}" -eq 0 ]]; then
+        return 0
+    fi
+
+    local current_size
+    current_size=$(get_file_size_bytes "$RAW_HISTORY_PATH")
+
+    if [[ $current_size -gt $MAX_RAW_HISTORY_BYTES ]]; then
+        log_info "Raw history exceeds limit ($(numfmt --to=iec $current_size) > $(numfmt --to=iec $MAX_RAW_HISTORY_BYTES)), rotating..."
+
+        # Keep the most recent 75% of max size
+        local keep_bytes=$(( MAX_RAW_HISTORY_BYTES * 3 / 4 ))
+        local temp_file="${RAW_HISTORY_PATH}.rotating"
+
+        # Use tail -c to keep the last N bytes, then find first complete entry
+        tail -c "$keep_bytes" "$RAW_HISTORY_PATH" > "$temp_file"
+
+        # Find first complete entry marker (--- [) and trim incomplete data before it
+        local first_marker
+        first_marker=$(grep -n -m 1 '^--- \[' "$temp_file" | cut -d: -f1)
+
+        if [[ -n "$first_marker" && "$first_marker" -gt 1 ]]; then
+            # Remove incomplete first entry
+            tail -n +$first_marker "$temp_file" > "${temp_file}.clean"
+            mv "${temp_file}.clean" "$temp_file"
+        fi
+
+        # Replace original with rotated version
+        mv "$temp_file" "$RAW_HISTORY_PATH"
+
+        local new_size
+        new_size=$(get_file_size_bytes "$RAW_HISTORY_PATH")
+        log_info "Rotation complete. New size: $(numfmt --to=iec $new_size)"
+    fi
+}
 
 append_to_history() {
     local content="$1"
